@@ -1,0 +1,573 @@
+import { useState, useEffect } from "react";
+
+const STORAGE_KEY = "suppletrack_v2";
+
+function today() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function daysLeft(startDate, cycleDays) {
+  if (!startDate) return 0;
+  const end = new Date(startDate);
+  end.setDate(end.getDate() + cycleDays);
+  const diff = Math.ceil((end - new Date()) / 86400000);
+  return Math.max(0, diff);
+}
+
+function fmtDate(dateStr, addDays = 0) {
+  const d = new Date(dateStr);
+  d.setDate(d.getDate() + addDays);
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+const COLORS = ["#2ec27e", "#5b9cf6", "#f5a623", "#e05d5d", "#b57bee", "#f06292", "#4dd0e1"];
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : { supplements: [] };
+  } catch { return { supplements: [] }; }
+}
+
+function saveData(data) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data)); } catch {}
+}
+
+const emptyForm = {
+  name: "", totalServings: "", servingsPerDay: "1",
+  cycleDays: "30", restDays: "7", reminderTime: "08:00", reminderTime2: "",
+};
+
+// ── Sub-components ─────────────────────────────────────────────
+
+function ProgressRing({ pct, color, size = 64, stroke = 5 }) {
+  const r = (size - stroke * 2) / 2;
+  const circ = 2 * Math.PI * r;
+  const offset = circ * (1 - Math.min(pct, 1));
+  return (
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}>
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth={stroke} />
+      <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth={stroke}
+        strokeDasharray={circ} strokeDashoffset={offset} strokeLinecap="round"
+        style={{ transition: "stroke-dashoffset 0.6s ease" }} />
+    </svg>
+  );
+}
+
+function Badge({ label, color }) {
+  return (
+    <span style={{
+      padding: "3px 10px", borderRadius: 99, fontSize: 11, fontWeight: 700,
+      background: color + "22", color, letterSpacing: "0.4px", textTransform: "uppercase",
+    }}>{label}</span>
+  );
+}
+
+function SupplementCard({ sup, onTake, onDetail, onDelete }) {
+  const takenDays = sup.log.filter(e => e.type === "take" && e.date === today()).length > 0;
+  const totalTaken = sup.log.filter(e => e.type === "take").length;
+  const servingsUsed = totalTaken * sup.servingsPerDay;
+  const servingsLeft = Math.max(0, sup.totalServings - servingsUsed);
+  const progress = Math.min(1, servingsUsed / sup.totalServings);
+  const cycleLeft = daysLeft(sup.startDate, sup.cycleDays);
+  const restLeft = daysLeft(sup.restStartDate, sup.restDays);
+  const nearRefill = servingsLeft <= sup.servingsPerDay * 5 && sup.status === "active";
+
+  const statusColor = sup.status === "rest" ? "#f5a623" : sup.status === "done" ? "#888" : sup.color;
+  const statusLabel = sup.status === "rest" ? "Rest" : sup.status === "done" ? "Done" : "Active";
+
+  return (
+    <div style={{
+      background: "rgba(255,255,255,0.035)",
+      border: `1px solid ${sup.color}33`,
+      borderRadius: 18,
+      padding: "18px 20px",
+      marginBottom: 14,
+      position: "relative",
+      overflow: "hidden",
+      cursor: "pointer",
+      transition: "border-color 0.2s",
+    }}
+      onClick={() => onDetail(sup.id)}
+    >
+      {/* Color accent bar */}
+      <div style={{
+        position: "absolute", left: 0, top: 0, bottom: 0, width: 4,
+        background: sup.color, borderRadius: "18px 0 0 18px",
+      }} />
+
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginLeft: 8 }}>
+        {/* Ring */}
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <ProgressRing pct={progress} color={sup.color} size={60} stroke={5} />
+          <div style={{
+            position: "absolute", inset: 0, display: "flex", alignItems: "center",
+            justifyContent: "center", fontSize: 11, fontWeight: 800, color: sup.color,
+          }}>
+            {Math.round(progress * 100)}%
+          </div>
+        </div>
+
+        {/* Info */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+            <span style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.3px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {sup.name}
+            </span>
+            <Badge label={statusLabel} color={statusColor} />
+          </div>
+          <div style={{ color: "#8aab9a", fontSize: 13, marginBottom: 6 }}>
+            {servingsLeft} servings left &nbsp;·&nbsp;
+            {sup.status === "rest" ? `${restLeft}d rest` : `${cycleLeft}d in cycle`}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            {nearRefill && (
+              <span style={{ fontSize: 11, color: "#f5a623", fontWeight: 700, background: "#f5a62322", padding: "2px 8px", borderRadius: 99 }}>
+                🛒 Refill Soon
+              </span>
+            )}
+            {sup.reminderTime && (
+              <span style={{ fontSize: 11, color: "#8aab9a" }}>⏰ {sup.reminderTime}{sup.reminderTime2 ? ` & ${sup.reminderTime2}` : ""}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Take button */}
+        <div style={{ flexShrink: 0 }} onClick={e => e.stopPropagation()}>
+          {sup.status === "active" && (
+            <button
+              onClick={() => onTake(sup.id)}
+              style={{
+                width: 44, height: 44, borderRadius: "50%", border: "none",
+                background: takenDays ? sup.color + "33" : sup.color,
+                color: takenDays ? sup.color : "#fff",
+                fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.2s",
+              }}
+              title={takenDays ? "Already taken today" : "Mark as taken"}
+            >
+              {takenDays ? "✓" : "+"}
+            </button>
+          )}
+          {sup.status === "rest" && restLeft === 0 && (
+            <button onClick={() => onDetail(sup.id)} style={{
+              padding: "8px 12px", borderRadius: 10, border: "none",
+              background: sup.color, color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer",
+            }}>Restart</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Detail View ────────────────────────────────────────────────
+
+function DetailView({ sup, onBack, onTake, onStartCycle, onDelete }) {
+  const totalTaken = sup.log.filter(e => e.type === "take").length;
+  const servingsUsed = totalTaken * sup.servingsPerDay;
+  const servingsLeft = Math.max(0, sup.totalServings - servingsUsed);
+  const progress = Math.min(1, servingsUsed / sup.totalServings);
+  const cycleLeft = daysLeft(sup.startDate, sup.cycleDays);
+  const restLeft = daysLeft(sup.restStartDate, sup.restDays);
+  const takenToday = sup.log.some(e => e.type === "take" && e.date === today());
+  const nearRefill = servingsLeft <= sup.servingsPerDay * 5 && sup.status === "active";
+
+  const s = {
+    section: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 16, padding: "18px 20px", marginBottom: 14 },
+    statBox: { background: "rgba(255,255,255,0.05)", borderRadius: 12, padding: "14px 0", textAlign: "center" },
+    statNum: { fontSize: 28, fontWeight: 800, letterSpacing: "-1px", color: sup.color },
+    statLbl: { fontSize: 11, color: "#8aab9a", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px", marginTop: 2 },
+    bigBtn: {
+      width: "100%", padding: "15px 0", borderRadius: 13, border: "none",
+      background: `linear-gradient(135deg, ${sup.color}, ${sup.color}bb)`,
+      color: "#fff", fontWeight: 700, fontSize: 16, cursor: "pointer", marginTop: 4,
+    },
+  };
+
+  return (
+    <div>
+      {/* Back + title */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <button onClick={onBack} style={{ background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 10, color: "#e8f0ec", padding: "8px 14px", cursor: "pointer", fontSize: 15 }}>← Back</button>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontWeight: 800, fontSize: 22, letterSpacing: "-0.5px" }}>{sup.name}</div>
+          <div style={{ color: "#8aab9a", fontSize: 13 }}>{sup.servingsPerDay} serving{sup.servingsPerDay > 1 ? "s" : ""}/day</div>
+        </div>
+        <Badge label={sup.status === "rest" ? "🛌 Rest" : sup.status === "done" ? "Done" : "● Active"} color={sup.color} />
+      </div>
+
+      {/* Big ring + stats */}
+      <div style={{ ...s.section, display: "flex", alignItems: "center", gap: 20 }}>
+        <div style={{ position: "relative", flexShrink: 0 }}>
+          <ProgressRing pct={progress} color={sup.color} size={88} stroke={7} />
+          <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, fontWeight: 800, color: sup.color }}>
+            {Math.round(progress * 100)}%
+          </div>
+        </div>
+        <div style={{ flex: 1, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+          <div style={s.statBox}><div style={s.statNum}>{servingsLeft}</div><div style={s.statLbl}>Servings Left</div></div>
+          <div style={s.statBox}><div style={s.statNum}>{totalTaken}</div><div style={s.statLbl}>Days Taken</div></div>
+          <div style={s.statBox}><div style={{ ...s.statNum, color: sup.status === "rest" ? "#f5a623" : sup.color }}>{sup.status === "rest" ? restLeft : cycleLeft}</div><div style={s.statLbl}>{sup.status === "rest" ? "Rest Days Left" : "Cycle Days Left"}</div></div>
+          <div style={s.statBox}><div style={s.statNum}>{sup.restDays}</div><div style={s.statLbl}>Rest Duration</div></div>
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div style={s.section}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "#8aab9a", marginBottom: 8, fontWeight: 600 }}>
+          <span>SERVINGS USED</span><span>{servingsUsed} / {sup.totalServings}</span>
+        </div>
+        <div style={{ height: 10, background: "rgba(255,255,255,0.08)", borderRadius: 99, overflow: "hidden" }}>
+          <div style={{ height: "100%", width: `${progress * 100}%`, background: progress > 0.9 ? "#e05d5d" : progress > 0.7 ? "#f5a623" : sup.color, borderRadius: 99, transition: "width 0.5s ease" }} />
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#8aab9a", marginTop: 6 }}>
+          <span>Cycle start: {fmtDate(sup.startDate)}</span>
+          <span>End: {fmtDate(sup.startDate, sup.cycleDays)}</span>
+        </div>
+      </div>
+
+      {/* Reminders */}
+      <div style={{ ...s.section, display: "flex", alignItems: "center", gap: 14 }}>
+        <span style={{ fontSize: 26 }}>⏰</span>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14 }}>Daily Reminder{sup.reminderTime2 ? "s" : ""}</div>
+          <div style={{ color: "#8aab9a", fontSize: 14 }}>{sup.reminderTime}{sup.reminderTime2 ? ` and ${sup.reminderTime2}` : ""}</div>
+        </div>
+      </div>
+
+      {/* Refill alert */}
+      {nearRefill && (
+        <div style={{ ...s.section, background: "rgba(245,166,35,0.08)", border: "1px solid rgba(245,166,35,0.3)" }}>
+          <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <span style={{ fontSize: 24 }}>🛒</span>
+            <div>
+              <div style={{ fontWeight: 700, color: "#f5a623" }}>Refill Soon!</div>
+              <div style={{ fontSize: 13, color: "#c08030" }}>Only {servingsLeft} servings left — consider reordering.</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Action */}
+      {sup.status === "active" && (
+        <button style={{ ...s.bigBtn, opacity: takenToday ? 0.5 : 1, background: takenToday ? sup.color + "33" : `linear-gradient(135deg, ${sup.color}, ${sup.color}99)`, color: takenToday ? sup.color : "#fff", border: takenToday ? `1px solid ${sup.color}55` : "none" }}
+          onClick={() => onTake(sup.id)}>
+          {takenToday ? "✓ Taken Today" : "Mark as Taken Today"}
+        </button>
+      )}
+
+      {sup.status === "rest" && (
+        <div style={{ ...s.section, textAlign: "center" }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🛌</div>
+          <div style={{ fontWeight: 700, fontSize: 16, color: "#f5a623", marginBottom: 4 }}>Rest Period Active</div>
+          <div style={{ color: "#8aab9a", fontSize: 14, marginBottom: restLeft === 0 ? 16 : 0 }}>
+            {restLeft > 0 ? `${restLeft} days remaining — let your body recover.` : "Rest complete! Ready for a new cycle."}
+          </div>
+          {restLeft === 0 && <button style={s.bigBtn} onClick={() => onStartCycle(sup.id)}>▶ Start New Cycle</button>}
+        </div>
+      )}
+
+      {/* Log */}
+      <div style={{ ...s.section, marginTop: 4 }}>
+        <div style={{ fontWeight: 700, fontSize: 13, color: "#8aab9a", textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12 }}>Activity Log</div>
+        {[...sup.log].reverse().slice(0, 8).map((e, i, arr) => (
+          <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < arr.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none" }}>
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <span style={{ fontSize: 16 }}>{e.type === "take" ? "💊" : e.type === "start" ? "🌱" : "🛌"}</span>
+              <span style={{ fontSize: 14 }}>{e.note}</span>
+            </div>
+            <span style={{ fontSize: 12, color: "#8aab9a" }}>{e.date}</span>
+          </div>
+        ))}
+        {sup.log.length === 0 && <div style={{ color: "#8aab9a", fontSize: 14, textAlign: "center", padding: "12px 0" }}>No activity yet</div>}
+      </div>
+
+      {/* Delete */}
+      <button onClick={() => onDelete(sup.id)} style={{ width: "100%", padding: "12px 0", borderRadius: 12, border: "1px solid rgba(224,93,93,0.3)", background: "transparent", color: "#e05d5d", fontSize: 14, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>
+        Delete Supplement
+      </button>
+    </div>
+  );
+}
+
+// ── Setup Form ─────────────────────────────────────────────────
+
+function SetupForm({ onSave, onCancel, colorIndex }) {
+  const [form, setForm] = useState(emptyForm);
+  const color = COLORS[colorIndex % COLORS.length];
+
+  const f = v => setForm(p => ({ ...p, ...v }));
+
+  const inputStyle = {
+    width: "100%", padding: "11px 14px",
+    background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.1)",
+    borderRadius: 10, color: "#e8f0ec", fontSize: 15, outline: "none",
+    boxSizing: "border-box", marginBottom: 12,
+  };
+  const label = { display: "block", fontSize: 12, color: "#8aab9a", marginBottom: 5, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.5px" };
+
+  const handleSave = () => {
+    if (!form.name || !form.totalServings || !form.servingsPerDay || !form.cycleDays || !form.restDays || !form.reminderTime) {
+      return;
+    }
+    onSave({
+      id: uid(),
+      name: form.name,
+      totalServings: parseInt(form.totalServings),
+      servingsPerDay: parseInt(form.servingsPerDay),
+      cycleDays: parseInt(form.cycleDays),
+      restDays: parseInt(form.restDays),
+      reminderTime: form.reminderTime,
+      reminderTime2: form.reminderTime2 || null,
+      startDate: today(),
+      restStartDate: null,
+      status: "active",
+      color,
+      log: [{ date: today(), type: "start", note: "Cycle started" }],
+    });
+  };
+
+  return (
+    <div style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${color}44`, borderRadius: 18, padding: "22px 20px", marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 18 }}>
+        <div style={{ width: 14, height: 14, borderRadius: "50%", background: color, flexShrink: 0 }} />
+        <div style={{ fontWeight: 800, fontSize: 18 }}>New Supplement</div>
+      </div>
+
+      <label style={label}>Name *</label>
+      <input style={inputStyle} placeholder="e.g. Vitamin D3, Magnesium…" value={form.name} onChange={e => f({ name: e.target.value })} />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={label}>Total Servings *</label>
+          <input style={inputStyle} type="number" placeholder="60" value={form.totalServings} onChange={e => f({ totalServings: e.target.value })} />
+        </div>
+        <div>
+          <label style={label}>Per Day *</label>
+          <input style={inputStyle} type="number" placeholder="1" value={form.servingsPerDay} onChange={e => f({ servingsPerDay: e.target.value })} />
+        </div>
+        <div>
+          <label style={label}>Cycle Days *</label>
+          <input style={inputStyle} type="number" placeholder="30" value={form.cycleDays} onChange={e => f({ cycleDays: e.target.value })} />
+        </div>
+        <div>
+          <label style={label}>Rest Days *</label>
+          <input style={inputStyle} type="number" placeholder="7" value={form.restDays} onChange={e => f({ restDays: e.target.value })} />
+        </div>
+      </div>
+
+      <label style={label}>Reminder Time *</label>
+      <input style={inputStyle} type="time" value={form.reminderTime} onChange={e => f({ reminderTime: e.target.value })} />
+
+      <label style={label}>2nd Reminder (optional)</label>
+      <input style={inputStyle} type="time" value={form.reminderTime2} onChange={e => f({ reminderTime2: e.target.value })} />
+
+      <div style={{ display: "flex", gap: 10 }}>
+        <button onClick={onCancel} style={{ flex: 1, padding: "12px 0", borderRadius: 11, border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "#8aab9a", cursor: "pointer", fontWeight: 600 }}>Cancel</button>
+        <button onClick={handleSave} style={{ flex: 2, padding: "12px 0", borderRadius: 11, border: "none", background: `linear-gradient(135deg, ${color}, ${color}99)`, color: "#fff", fontWeight: 700, fontSize: 15, cursor: "pointer" }}>Start Tracking</button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ───────────────────────────────────────────────────
+
+export default function App() {
+  const [data, setData] = useState(loadData);
+  const [view, setView] = useState("home"); // home | detail
+  const [detailId, setDetailId] = useState(null);
+  const [showForm, setShowForm] = useState(false);
+  const [toast, setToast] = useState(null);
+
+  const persist = (d) => { setData(d); saveData(d); };
+
+  const showToast = (msg, color = "#2ec27e") => {
+    setToast({ msg, color });
+    setTimeout(() => setToast(null), 2600);
+  };
+
+  const handleAddSupplement = (sup) => {
+    persist({ supplements: [...data.supplements, sup] });
+    setShowForm(false);
+    showToast(`${sup.name} added! 🌿`, sup.color);
+  };
+
+  const handleTake = (id) => {
+    const sups = data.supplements.map(s => {
+      if (s.id !== id) return s;
+      if (s.log.some(e => e.type === "take" && e.date === today())) {
+        showToast("Already logged today!", "#f5a623");
+        return s;
+      }
+      const newLog = [...s.log, { date: today(), type: "take", note: "Taken" }];
+      const totalTaken = newLog.filter(e => e.type === "take").length;
+      const used = totalTaken * s.servingsPerDay;
+      let newStatus = s.status;
+      let restStartDate = s.restStartDate;
+      if (used >= s.totalServings) {
+        newStatus = "rest";
+        restStartDate = today();
+        showToast(`${s.name} cycle complete! Rest started 🛌`, s.color);
+      } else {
+        showToast(`${s.name} logged ✅`, s.color);
+      }
+      return { ...s, log: newLog, status: newStatus, restStartDate };
+    });
+    persist({ supplements: sups });
+  };
+
+  const handleStartCycle = (id) => {
+    const sups = data.supplements.map(s => {
+      if (s.id !== id) return s;
+      return { ...s, status: "active", startDate: today(), restStartDate: null, log: [...s.log, { date: today(), type: "start", note: "New cycle started" }] };
+    });
+    persist({ supplements: sups });
+    showToast("New cycle started! 🔁");
+  };
+
+  const handleDelete = (id) => {
+    persist({ supplements: data.supplements.filter(s => s.id !== id) });
+    setView("home");
+    setDetailId(null);
+    showToast("Supplement removed.");
+  };
+
+  const detailSup = data.supplements.find(s => s.id === detailId);
+
+  // Summary counts
+  const activeCount = data.supplements.filter(s => s.status === "active").length;
+  const restCount = data.supplements.filter(s => s.status === "rest").length;
+  const refillCount = data.supplements.filter(s => {
+    const used = s.log.filter(e => e.type === "take").length * s.servingsPerDay;
+    const left = Math.max(0, s.totalServings - used);
+    return left <= s.servingsPerDay * 5 && s.status === "active";
+  }).length;
+
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(160deg, #080d12 0%, #0a1520 60%, #081208 100%)",
+      fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
+      color: "#e8f0ec",
+      display: "flex", flexDirection: "column", alignItems: "center",
+      paddingBottom: 60,
+    }}>
+      <div style={{ width: "100%", maxWidth: 500, padding: "0 20px" }}>
+
+        {/* Header */}
+        <div style={{ padding: "32px 0 8px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontWeight: 800, fontSize: 26, letterSpacing: "-0.8px", color: "#fff" }}>
+              💊 SuppleTrack
+            </div>
+            <div style={{ color: "#8aab9a", fontSize: 13, marginTop: 2 }}>
+              {data.supplements.length === 0 ? "No supplements yet" :
+                `${activeCount} active${restCount ? ` · ${restCount} resting` : ""}${refillCount ? ` · ⚠️ ${refillCount} refill` : ""}`}
+            </div>
+          </div>
+          {view === "home" && (
+            <button
+              onClick={() => setShowForm(v => !v)}
+              style={{
+                background: showForm ? "rgba(255,255,255,0.08)" : "linear-gradient(135deg, #2ec27e, #1a9e5e)",
+                border: "none", borderRadius: 12, color: "#fff", padding: "10px 18px",
+                fontWeight: 700, fontSize: 15, cursor: "pointer", letterSpacing: "-0.3px",
+              }}
+            >
+              {showForm ? "✕ Cancel" : "+ Add"}
+            </button>
+          )}
+        </div>
+
+        {/* ── HOME ── */}
+        {view === "home" && (
+          <>
+            {/* Add form */}
+            {showForm && (
+              <SetupForm
+                onSave={handleAddSupplement}
+                onCancel={() => setShowForm(false)}
+                colorIndex={data.supplements.length}
+              />
+            )}
+
+            {/* Empty state */}
+            {data.supplements.length === 0 && !showForm && (
+              <div style={{
+                textAlign: "center", padding: "56px 24px",
+                background: "rgba(255,255,255,0.03)", border: "1px dashed rgba(255,255,255,0.1)",
+                borderRadius: 20, marginTop: 12,
+              }}>
+                <div style={{ fontSize: 52, marginBottom: 14 }}>🌿</div>
+                <div style={{ fontWeight: 800, fontSize: 20, marginBottom: 6 }}>Nothing tracked yet</div>
+                <div style={{ color: "#8aab9a", fontSize: 14 }}>Tap "+ Add" to start tracking your first supplement.</div>
+              </div>
+            )}
+
+            {/* Supplement list */}
+            {data.supplements.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                {/* Refill alerts banner */}
+                {refillCount > 0 && (
+                  <div style={{
+                    background: "rgba(245,166,35,0.1)", border: "1px solid rgba(245,166,35,0.25)",
+                    borderRadius: 14, padding: "12px 16px", marginBottom: 14,
+                    display: "flex", alignItems: "center", gap: 10,
+                  }}>
+                    <span style={{ fontSize: 20 }}>🛒</span>
+                    <div style={{ fontSize: 13, color: "#f5a623", fontWeight: 600 }}>
+                      {refillCount} supplement{refillCount > 1 ? "s" : ""} running low — time to reorder!
+                    </div>
+                  </div>
+                )}
+
+                {data.supplements.map(sup => (
+                  <SupplementCard
+                    key={sup.id}
+                    sup={sup}
+                    onTake={handleTake}
+                    onDetail={(id) => { setDetailId(id); setView("detail"); }}
+                    onDelete={handleDelete}
+                  />
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ── DETAIL ── */}
+        {view === "detail" && detailSup && (
+          <div style={{ marginTop: 16 }}>
+            <DetailView
+              sup={detailSup}
+              onBack={() => { setView("home"); setDetailId(null); }}
+              onTake={handleTake}
+              onStartCycle={handleStartCycle}
+              onDelete={handleDelete}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Toast */}
+      {toast && (
+        <div style={{
+          position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+          background: toast.color, color: "#fff", padding: "12px 22px",
+          borderRadius: 99, fontWeight: 600, fontSize: 14, zIndex: 999,
+          boxShadow: "0 4px 28px rgba(0,0,0,0.5)", whiteSpace: "nowrap",
+          animation: "fadeup 0.25s ease",
+        }}>
+          {toast.msg}
+        </div>
+      )}
+
+      <style>{`@keyframes fadeup { from { opacity: 0; transform: translateX(-50%) translateY(10px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }`}</style>
+    </div>
+  );
+}
