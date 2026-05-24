@@ -583,7 +583,22 @@
     </div>
     <div class="field">
       <label>🔔 Daily Reminder Time (optional)</label>
-      <input type="time" id="inputReminder" />
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <select id="reminderHour" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 8px;color:var(--text);font-size:15px;font-family:'DM Sans',sans-serif;outline:none">
+          <option value="">Hr</option>
+          <option>1</option><option>2</option><option>3</option><option>4</option>
+          <option>5</option><option>6</option><option>7</option><option>8</option>
+          <option>9</option><option>10</option><option>11</option><option>12</option>
+        </select>
+        <select id="reminderMin" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 8px;color:var(--text);font-size:15px;font-family:'DM Sans',sans-serif;outline:none">
+          <option value="">Min</option>
+          <option>00</option><option>15</option><option>30</option><option>45</option>
+        </select>
+        <select id="reminderAmpm" style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 8px;color:var(--text);font-size:15px;font-family:'DM Sans',sans-serif;outline:none">
+          <option value="">AM/PM</option>
+          <option>AM</option><option>PM</option>
+        </select>
+      </div>
     </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="closeModal()">Cancel</button>
@@ -939,7 +954,9 @@
     document.getElementById('inputCycle').value = 0;
     document.getElementById('inputRest').value = 0;
     document.getElementById('inputRefill').value = 10;
-    document.getElementById('inputReminder').value = '';
+    document.getElementById('reminderHour').value = '';
+    document.getElementById('reminderMin').value = '';
+    document.getElementById('reminderAmpm').value = '';
     document.getElementById('modalOverlay').style.display = 'flex';
   }
 
@@ -955,7 +972,20 @@
     document.getElementById('inputCycle').value = s.cycleDays || 0;
     document.getElementById('inputRest').value = s.restDays || 0;
     document.getElementById('inputRefill').value = s.refillAlert;
-    document.getElementById('inputReminder').value = s.reminderTime || '';
+    // Parse stored reminderTime (HH:MM 24h) back into dropdowns
+    if (s.reminderTime) {
+      var rp = s.reminderTime.split(':');
+      var rh = parseInt(rp[0]), rm = rp[1];
+      var ampm = rh >= 12 ? 'PM' : 'AM';
+      var h12 = rh % 12 || 12;
+      document.getElementById('reminderHour').value = String(h12);
+      document.getElementById('reminderMin').value = rm;
+      document.getElementById('reminderAmpm').value = ampm;
+    } else {
+      document.getElementById('reminderHour').value = '';
+      document.getElementById('reminderMin').value = '';
+      document.getElementById('reminderAmpm').value = '';
+    }
     document.getElementById('modalOverlay').style.display = 'flex';
   }
 
@@ -971,7 +1001,15 @@
     const cycleDays = parseInt(document.getElementById('inputCycle').value) || 0;
     const restDays = parseInt(document.getElementById('inputRest').value) || 0;
     const refillAlert = parseInt(document.getElementById('inputRefill').value) || 10;
-    const reminderTime = document.getElementById('inputReminder').value || null;
+    // Build reminderTime from dropdowns → store as "HH:MM" 24h
+    var rHour = document.getElementById('reminderHour').value;
+    var rMin = document.getElementById('reminderMin').value;
+    var rAmpm = document.getElementById('reminderAmpm').value;
+    var reminderTime = null;
+    if (rHour && rMin && rAmpm) {
+      var h24 = parseInt(rHour) % 12 + (rAmpm === 'PM' ? 12 : 0);
+      reminderTime = String(h24).padStart(2,'0') + ':' + rMin;
+    }
     if (!name) { alert('Please enter a supplement name.'); return; }
 
     if (editingId) {
